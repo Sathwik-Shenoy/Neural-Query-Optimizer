@@ -7,6 +7,7 @@ training:
   model_path: artifacts/plan_selector.joblib
   dataset_path: artifacts/training_dataset.csv
   metrics_path: artifacts/training_metrics.json
+  comparison_path: artifacts/plan_comparisons.json
 execution:
   index_scan_bonus: 0.65
   hash_join_bonus: 0.55

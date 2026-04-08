@@ -111,10 +111,12 @@ class TrainingPipeline:
         model_path = str(train_cfg["model_path"])
         dataset_path = str(train_cfg["dataset_path"])
         metrics_path = str(train_cfg["metrics_path"])
+        comparison_path = str(train_cfg.get("comparison_path", "artifacts/plan_comparisons.json"))
 
         Path(model_path).parent.mkdir(parents=True, exist_ok=True)
         Path(dataset_path).parent.mkdir(parents=True, exist_ok=True)
         Path(metrics_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(comparison_path).parent.mkdir(parents=True, exist_ok=True)
 
         # type: ignore[attr-defined]
         model.save(model_path)
@@ -130,6 +132,10 @@ class TrainingPipeline:
 
         with Path(metrics_path).open("w", encoding="utf-8") as handle:
             json.dump(metrics, handle, indent=2)
+
+        comparisons = self._build_plan_comparisons(test_df, test_pred)
+        with Path(comparison_path).open("w", encoding="utf-8") as handle:
+            json.dump(comparisons, handle, indent=2)
 
         return metrics
 
@@ -194,3 +200,36 @@ class TrainingPipeline:
             "baseline_mean_latency_ms": float(baseline_total / max(total, 1)),
             "ml_mean_latency_ms": float(model_total / max(total, 1)),
         }
+
+    def _build_plan_comparisons(self, test_df: pd.DataFrame, test_pred: np.ndarray) -> List[Dict[str, object]]:
+        eval_df = test_df.copy()
+        eval_df["predicted_latency_ms"] = test_pred
+        rows: List[Dict[str, object]] = []
+
+        for qid, group in eval_df.groupby("query_id"):
+            oracle_row = group.loc[group["actual_latency_ms"].idxmin()]
+            baseline_row = group.loc[group["baseline_cost"].idxmin()]
+            model_row = group.loc[group["predicted_latency_ms"].idxmin()]
+
+            rows.append(
+                {
+                    "query_id": int(qid),
+                    "sql": str(group.iloc[0]["sql"]),
+                    "rule_based": {
+                        "plan": str(baseline_row["plan_id"]),
+                        "estimated_cost": float(baseline_row["baseline_cost"]),
+                        "actual_cost": float(baseline_row["actual_latency_ms"]),
+                    },
+                    "ml_selected": {
+                        "plan": str(model_row["plan_id"]),
+                        "predicted_cost": float(model_row["predicted_latency_ms"]),
+                        "actual_cost": float(model_row["actual_latency_ms"]),
+                    },
+                    "actual_best": {
+                        "plan": str(oracle_row["plan_id"]),
+                        "actual_cost": float(oracle_row["actual_latency_ms"]),
+                    },
+                }
+            )
+
+        return rows
