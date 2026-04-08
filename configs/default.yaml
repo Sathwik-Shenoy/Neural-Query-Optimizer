@@ -1,0 +1,16 @@
+seed: 42
+training:
+  num_tables: 3
+  rows_per_table: 2500
+  num_queries: 160
+  train_split: 0.8
+  model_path: artifacts/plan_selector.joblib
+  dataset_path: artifacts/training_dataset.csv
+  metrics_path: artifacts/training_metrics.json
+execution:
+  index_scan_bonus: 0.65
+  hash_join_bonus: 0.55
+  nested_loop_penalty: 1.6
+api:
+  host: 127.0.0.1
+  port: 8000
