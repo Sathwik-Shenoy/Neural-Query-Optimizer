@@ -11,6 +11,13 @@ execution:
   index_scan_bonus: 0.65
   hash_join_bonus: 0.55
   nested_loop_penalty: 1.6
+cost_model:
+  rows_per_page: 128
+  seq_page_read_cost: 1.0
+  random_page_read_cost: 4.0
+  cpu_tuple_cost: 0.01
+  cpu_operator_cost: 0.002
+  hash_cpu_cost: 0.004
 api:
   host: 127.0.0.1
   port: 8000
