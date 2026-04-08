@@ -21,6 +21,15 @@ This project frames ML as a **cost approximation layer**, not a replacement for 
 
 This can reduce systematic heuristic bias while preserving optimizer structure.
 
+### Direct answer: Why ML over rule-based?
+
+- Rule models assume uniform data and independent predicates.
+- Real workloads violate those assumptions via skew, correlation, and drift.
+- A learned model is trained on observed runtime and can approximate the missing nonlinear effects.
+- The optimizer still enumerates and validates candidate plans; ML only improves cost ranking.
+
+In short: ML augments cost estimation where hand-crafted formulas are systematically wrong.
+
 ## Where ML Fails
 
 - Query distribution shift: unseen query templates degrade predictions.
@@ -48,6 +57,16 @@ This can reduce systematic heuristic bias while preserving optimizer structure.
 - This project uses a compact simulator and lightweight statistics.
 - The architecture mirrors real optimizer loops (parse -> enumerate -> estimate -> choose -> execute) but simplifies storage and execution internals.
 
+### Explicit limitations vs PostgreSQL
+
+1. No catalog-level statistics subsystem (no ANALYZE lifecycle).
+2. No histogram/MCV selectivity model with correlation corrections.
+3. Limited join search space (left-deep + small bushy subset only).
+4. No parallel query planning/execution.
+5. No real buffer manager, disk layout, or concurrency control.
+
+These are deliberate scope cuts to isolate learned cost estimation in a controllable environment.
+
 ## Failure Cases to Discuss in Interviews
 
 1. Skewed join keys produce severe cardinality underestimation.
@@ -55,3 +74,21 @@ This can reduce systematic heuristic bias while preserving optimizer structure.
 3. Unseen multi-join templates lower ML ranking accuracy.
 4. Small synthetic training set can overfit scan/join heuristic patterns.
 5. Cost constants tuned for one hardware profile transfer poorly.
+
+## Cost vs Actual Gap Analysis
+
+For each selected plan, we track:
+
+- `cost_error = estimated_or_predicted_cost - actual_runtime_cost`
+
+Interpretation:
+
+- Positive error: model overestimates cost.
+- Negative error: model underestimates cost.
+
+Root causes to discuss:
+
+1. Cache effects are not fully represented in static formulas.
+2. Data skew breaks NDV-based selectivity assumptions.
+3. Correlated predicates violate independence assumptions.
+4. Runtime noise and Python/Pandas overhead distort clean operator-level models.

@@ -160,6 +160,9 @@ Training emits quantitative comparison of rule-based vs ML-guided selection:
 - Runtime benefit:
   - `latency_improvement_over_baseline`
   - baseline and ML mean chosen latency
+- Cost-gap analysis:
+  - `baseline_cost_bias_ms`, `baseline_cost_mae_ms`
+  - `ml_cost_bias_ms`, `ml_cost_mae_ms`
 
 These are written to [artifacts/training_metrics.json](artifacts/training_metrics.json).
 
@@ -170,6 +173,14 @@ These are written to [artifacts/training_metrics.json](artifacts/training_metric
 - Simulator approximates hardware/runtime effects and does not model full buffer/cache behavior
 - No transaction/concurrency control
 - Statistics model is lightweight compared with production systems
+
+### Explicit Differences vs PostgreSQL
+
+1. No catalog statistics maintenance lifecycle (`ANALYZE`-style refresh).
+2. No full histogram/MCV/correlation selectivity model.
+3. Join search space is intentionally constrained.
+4. No parallel plan generation or parallel execution operators.
+5. No buffer manager, page eviction policy, WAL, or transaction subsystem.
 
 ## Failure Cases
 
