@@ -15,6 +15,8 @@ Production-style research/engineering project that combines query optimization i
   - rows scanned
   - peak memory bytes
 - Rule-based baseline cost model
+- Cardinality estimation for predicates and equi-joins
+- Cost decomposition with explicit I/O and CPU terms
 - Learned model (Random Forest baseline) that predicts plan cost
 - End-to-end training pipeline with synthetic workload generation
 - FastAPI inference service for live plan ranking
@@ -29,12 +31,32 @@ Production-style research/engineering project that combines query optimization i
 - [neural_query_optimizer/execution_engine/database.py](neural_query_optimizer/execution_engine/database.py): in-memory table catalog
 - [neural_query_optimizer/execution_engine/simulator.py](neural_query_optimizer/execution_engine/simulator.py): plan execution + metrics
 - [neural_query_optimizer/cost_model/baseline.py](neural_query_optimizer/cost_model/baseline.py): heuristic rule-based estimator
+- [neural_query_optimizer/cost_model/cardinality.py](neural_query_optimizer/cost_model/cardinality.py): cardinality/selectivity estimation
 - [neural_query_optimizer/ml_model/features.py](neural_query_optimizer/ml_model/features.py): feature extraction
 - [neural_query_optimizer/ml_model/model.py](neural_query_optimizer/ml_model/model.py): model interface + RF implementation
 - [neural_query_optimizer/ml_model/inference.py](neural_query_optimizer/ml_model/inference.py): learned plan ranking service
 - [neural_query_optimizer/training/pipeline.py](neural_query_optimizer/training/pipeline.py): training and evaluation orchestration
 - [neural_query_optimizer/api/server.py](neural_query_optimizer/api/server.py): FastAPI endpoints
-- [main.py](main.py): CLI entrypoint
+- [neural_query_optimizer/main.py](neural_query_optimizer/main.py): CLI entrypoint
+
+## Database-Style Optimizer Design
+
+This project intentionally models core DB optimizer ideas instead of random scoring:
+
+1. Cardinality estimation:
+  - Filter selectivity from NDV and numeric bounds
+  - Join selectivity from equi-join NDV relationship
+  - Estimated rows feed every downstream cost decision
+
+2. Cost model (interpretable):
+  - `Cost = I/O cost + CPU cost`
+  - Scan cost combines page-read cost and tuple processing cost
+  - Join cost differentiates nested-loop vs hash join complexity
+
+3. Join order search:
+  - Selinger-style dynamic programming for left-deep trees
+  - Complexity is exponential in tables (`O(n^2 2^n)`), so alternatives are capped
+  - Additional orders are still explored for plan diversity
 
 ## Setup
 
@@ -100,21 +122,46 @@ pytest -q
 
 ## How ML Improves Optimization
 
-1. Baseline rule cost model provides explainable but coarse estimates.
-2. Training pipeline executes many candidate plans and records true latencies.
+ML here is framed as a **cost-function approximator**, not a replacement for query planning.
+
+1. Rule-based cost model gives interpretable but imperfect estimates.
+2. Training pipeline executes candidate plans and captures observed latency.
 3. The model learns nonlinear interactions among:
    - table sizes
    - predicate/selectivity features
    - join/scan strategy mix
-4. At inference, candidates are ranked by predicted latency, often choosing faster plans than the heuristic baseline.
+4. At inference, each candidate gets a predicted cost; optimizer picks lowest predicted cost.
+
+## Evaluation Protocol
+
+Training emits quantitative comparison of rule-based vs ML-guided selection:
+
+- Cost prediction quality: `MAE`, `RMSE`, `R2`, `MAPE`
+- Plan quality:
+  - `plan_selection_accuracy` (ML matches oracle best plan)
+  - `baseline_plan_selection_accuracy`
+  - `ml_vs_baseline_win_rate`
+- Runtime benefit:
+  - `latency_improvement_over_baseline`
+  - baseline and ML mean chosen latency
+
+These are written to [artifacts/training_metrics.json](artifacts/training_metrics.json).
 
 ## Limitations vs Real DBMS
 
 - SQL support is intentionally scoped (SELECT/JOIN/WHERE core)
-- Only left-deep joins are enumerated
+- Join ordering is left-deep DP only (no bushy plan search)
 - Simulator approximates hardware/runtime effects and does not model full buffer/cache behavior
 - No transaction/concurrency control
 - Statistics model is lightweight compared with production systems
+
+## Failure Cases
+
+- Unseen query shapes: ML can mis-rank plans under distribution shift.
+- Data skew: NDV-based selectivity can under-estimate hot-key joins.
+- Correlated predicates: independence assumptions over/under-estimate cardinality.
+- Sparse indexes: index-scan assumptions become optimistic when random I/O dominates.
+- Drift over time: model and statistics need periodic retraining/refresh.
 
 ## Interview Discussion Hooks
 
