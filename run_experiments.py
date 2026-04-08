@@ -20,6 +20,8 @@ def summarize_comparisons(path: Path) -> dict[str, float]:
     baseline_costs = [float(r["rule_based"]["actual_cost"]) for r in rows]
     ml_costs = [float(r["ml_selected"]["actual_cost"]) for r in rows]
     best_costs = [float(r["actual_best"]["actual_cost"]) for r in rows]
+    baseline_errors = [float(r["rule_based"]["cost_error"]) for r in rows]
+    ml_errors = [float(r["ml_selected"]["cost_error"]) for r in rows]
     accuracy = sum(int(r["ml_selected"]["plan"] == r["actual_best"]["plan"]) for r in rows) / len(rows)
     improvement = (sum(baseline_costs) - sum(ml_costs)) / max(sum(baseline_costs), 1e-9)
 
@@ -27,6 +29,8 @@ def summarize_comparisons(path: Path) -> dict[str, float]:
         "rule_based_best_plan_cost": float(sum(baseline_costs) / len(baseline_costs)),
         "ml_predicted_best_plan_cost": float(sum(ml_costs) / len(ml_costs)),
         "actual_best_plan_cost": float(sum(best_costs) / len(best_costs)),
+        "baseline_cost_error": float(sum(baseline_errors) / len(baseline_errors)),
+        "ml_cost_error": float(sum(ml_errors) / len(ml_errors)),
         "accuracy": float(accuracy),
         "improvement": float(improvement),
     }
@@ -36,8 +40,11 @@ def print_summary(summary: dict[str, float]) -> None:
     print(f"Rule-based best plan cost: {summary['rule_based_best_plan_cost']:.3f}")
     print(f"ML predicted best plan cost: {summary['ml_predicted_best_plan_cost']:.3f}")
     print(f"Actual best plan cost: {summary['actual_best_plan_cost']:.3f}")
+    print(f"Cost estimation error (rule): {summary['baseline_cost_error']:+.3f}")
+    print(f"Cost estimation error (ml): {summary['ml_cost_error']:+.3f}")
     print(f"Accuracy: {summary['accuracy'] * 100:.2f}%")
     print(f"Improvement: {summary['improvement'] * 100:+.2f}%")
+    print("Why costs differ: cache effects, skew, and imperfect cardinality statistics.")
 
 
 def print_table(comparison_path: Path) -> None:

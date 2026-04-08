@@ -147,8 +147,11 @@ class TrainingPipeline:
             "total_rows",
             "predicate_count",
             "estimated_selectivity",
+            "estimated_selectivity_explicit",
             "estimated_filtered_rows",
+            "estimated_rows_after_filter",
             "estimated_output_rows",
+            "estimated_join_output_size",
             "index_scan_count",
             "full_scan_count",
             "hash_join_count",
@@ -175,6 +178,10 @@ class TrainingPipeline:
         baseline_total = 0.0
         model_total = 0.0
         model_beats_baseline = 0
+        baseline_error_sum = 0.0
+        baseline_abs_error_sum = 0.0
+        ml_error_sum = 0.0
+        ml_abs_error_sum = 0.0
 
         for _, group in eval_df.groupby("query_id"):
             oracle_row = group.loc[group["actual_latency_ms"].idxmin()]
@@ -188,6 +195,13 @@ class TrainingPipeline:
             model_total += float(model_row["actual_latency_ms"])
             model_beats_baseline += int(float(model_row["actual_latency_ms"]) < float(baseline_row["actual_latency_ms"]))
 
+            baseline_err = float(baseline_row["baseline_cost"]) - float(baseline_row["actual_latency_ms"])
+            ml_err = float(model_row["predicted_latency_ms"]) - float(model_row["actual_latency_ms"])
+            baseline_error_sum += baseline_err
+            baseline_abs_error_sum += abs(baseline_err)
+            ml_error_sum += ml_err
+            ml_abs_error_sum += abs(ml_err)
+
         accuracy = float(correct / max(total, 1))
         baseline_accuracy = float(baseline_correct / max(total, 1))
         improvement = float((baseline_total - model_total) / max(baseline_total, 1e-6))
@@ -199,6 +213,10 @@ class TrainingPipeline:
             "latency_improvement_over_baseline": improvement,
             "baseline_mean_latency_ms": float(baseline_total / max(total, 1)),
             "ml_mean_latency_ms": float(model_total / max(total, 1)),
+            "baseline_cost_bias_ms": float(baseline_error_sum / max(total, 1)),
+            "baseline_cost_mae_ms": float(baseline_abs_error_sum / max(total, 1)),
+            "ml_cost_bias_ms": float(ml_error_sum / max(total, 1)),
+            "ml_cost_mae_ms": float(ml_abs_error_sum / max(total, 1)),
         }
 
     def _build_plan_comparisons(self, test_df: pd.DataFrame, test_pred: np.ndarray) -> List[Dict[str, object]]:
@@ -219,11 +237,13 @@ class TrainingPipeline:
                         "plan": str(baseline_row["plan_id"]),
                         "estimated_cost": float(baseline_row["baseline_cost"]),
                         "actual_cost": float(baseline_row["actual_latency_ms"]),
+                        "cost_error": float(baseline_row["baseline_cost"] - baseline_row["actual_latency_ms"]),
                     },
                     "ml_selected": {
                         "plan": str(model_row["plan_id"]),
                         "predicted_cost": float(model_row["predicted_latency_ms"]),
                         "actual_cost": float(model_row["actual_latency_ms"]),
+                        "cost_error": float(model_row["predicted_latency_ms"] - model_row["actual_latency_ms"]),
                     },
                     "actual_best": {
                         "plan": str(oracle_row["plan_id"]),

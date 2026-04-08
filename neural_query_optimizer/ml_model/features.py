@@ -29,11 +29,14 @@ class FeatureExtractor:
 
         selectivity = max(0.01, 1.0 - 0.15 * len(query.predicates))
         table_filter_rows = 0.0
+        total_base_rows = max(1.0, float(total_rows))
         for table in tables:
             table_preds = [p for p in query.predicates if p.table in (None, table)]
             table_filter_rows += self.cardinality.estimate_filter_rows(table, table_preds).rows
 
-        estimated_output_rows = max(1.0, table_filter_rows * (0.6 ** join_count))
+        estimated_rows_after_filter = max(1.0, table_filter_rows)
+        estimated_join_output_size = max(1.0, estimated_rows_after_filter * (0.6 ** join_count))
+        estimated_selectivity_explicit = min(1.0, estimated_rows_after_filter / total_base_rows)
 
         return {
             "table_count": float(len(tables)),
@@ -41,8 +44,11 @@ class FeatureExtractor:
             "total_rows": float(total_rows),
             "predicate_count": float(len(query.predicates)),
             "estimated_selectivity": float(selectivity),
+            "estimated_selectivity_explicit": float(estimated_selectivity_explicit),
             "estimated_filtered_rows": float(table_filter_rows),
-            "estimated_output_rows": float(estimated_output_rows),
+            "estimated_rows_after_filter": float(estimated_rows_after_filter),
+            "estimated_output_rows": float(estimated_join_output_size),
+            "estimated_join_output_size": float(estimated_join_output_size),
             "index_scan_count": float(index_scans),
             "full_scan_count": float(full_scans),
             "hash_join_count": float(hash_joins),
