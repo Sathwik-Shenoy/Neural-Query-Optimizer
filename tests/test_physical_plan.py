@@ -28,4 +28,19 @@ def test_dp_join_ordering_prioritizes_filtered_table() -> None:
     plans = generator.generate(parsed)
     assert len(plans) > 0
     # The first ranked order is the DP best order used for candidate generation.
-    assert plans[0].plan_id.startswith("order=t1")
+    assert "|order=t1" in plans[0].plan_id
+
+
+def test_bushy_shape_is_generated_for_three_table_joins() -> None:
+    db = InMemoryDatabase()
+    db.generate_synthetic(num_tables=3, rows_per_table=200, seed=13)
+
+    parser = SQLParser()
+    generator = PhysicalPlanGenerator(max_join_orders=3, db=db)
+    parsed = parser.parse(
+        "SELECT * FROM t1 JOIN t2 ON t1.join_id = t2.join_id "
+        "JOIN t3 ON t2.join_id = t3.join_id"
+    )
+
+    plans = generator.generate(parsed)
+    assert any(p.plan_id.startswith("shape=bushy") for p in plans)

@@ -36,20 +36,34 @@ class PhysicalPlanGenerator:
         for order in all_orders:
             scan_choices = ["full_scan", "index_scan"]
             for scan_assignment in itertools.product(scan_choices, repeat=len(order)):
-                plan = self._build_left_deep_plan(
+                left_deep_plan = self._build_left_deep_plan(
                     order=order,
                     scan_assignment=scan_assignment,
                     predicates_by_table=predicates_by_table,
                     join_conditions=join_conditions,
                 )
-                if plan is None:
-                    continue
-                join_algos = self._count_join_nodes(plan)
-                for algo_choice in itertools.product(["nested_loop", "hash_join"], repeat=join_algos):
-                    cloned = self._clone(plan)
-                    self._assign_join_algorithms(cloned, list(algo_choice))
-                    plan_id = self._plan_id(order, scan_assignment, algo_choice)
-                    candidates.append(PlanCandidate(plan_id=plan_id, plan=cloned))
+                if left_deep_plan is not None:
+                    join_algos = self._count_join_nodes(left_deep_plan)
+                    for algo_choice in itertools.product(["nested_loop", "hash_join"], repeat=join_algos):
+                        cloned = self._clone(left_deep_plan)
+                        self._assign_join_algorithms(cloned, list(algo_choice))
+                        plan_id = self._plan_id(order, scan_assignment, algo_choice, shape="left_deep")
+                        candidates.append(PlanCandidate(plan_id=plan_id, plan=cloned))
+
+                if len(order) == 3:
+                    bushy_plan = self._build_bushy_three_table_plan(
+                        order=order,
+                        scan_assignment=scan_assignment,
+                        predicates_by_table=predicates_by_table,
+                        join_conditions=join_conditions,
+                    )
+                    if bushy_plan is not None:
+                        join_algos = self._count_join_nodes(bushy_plan)
+                        for algo_choice in itertools.product(["nested_loop", "hash_join"], repeat=join_algos):
+                            cloned = self._clone(bushy_plan)
+                            self._assign_join_algorithms(cloned, list(algo_choice))
+                            plan_id = self._plan_id(order, scan_assignment, algo_choice, shape="bushy")
+                            candidates.append(PlanCandidate(plan_id=plan_id, plan=cloned))
 
         return candidates
 
@@ -170,6 +184,44 @@ class PhysicalPlanGenerator:
                 return join_conditions[key]
         return None
 
+    def _build_bushy_three_table_plan(
+        self,
+        order: Tuple[str, ...],
+        scan_assignment: Tuple[str, ...],
+        predicates_by_table: Dict[str, List[Predicate]],
+        join_conditions: Dict[frozenset[str], JoinCondition],
+    ) -> PhysicalPlanNode | None:
+        # Shape: t0 ⋈ (t1 ⋈ t2). This complements ((t0 ⋈ t1) ⋈ t2).
+        t0, t1, t2 = order
+        s0, s1, s2 = scan_assignment
+
+        right_cond = self._find_attachable_condition({t1}, t2, join_conditions)
+        if right_cond is None:
+            return None
+
+        right_subtree = PhysicalPlanNode(
+            operator="join",
+            params={"algorithm": "nested_loop", "condition": right_cond},
+            children=[
+                PhysicalPlanNode(operator=s1, params={"table": t1, "predicates": predicates_by_table.get(t1, [])}),
+                PhysicalPlanNode(operator=s2, params={"table": t2, "predicates": predicates_by_table.get(t2, [])}),
+            ],
+        )
+
+        root_cond = self._find_attachable_condition({t1, t2}, t0, join_conditions)
+        if root_cond is None:
+            return None
+
+        root = PhysicalPlanNode(
+            operator="join",
+            params={"algorithm": "nested_loop", "condition": root_cond},
+            children=[
+                PhysicalPlanNode(operator=s0, params={"table": t0, "predicates": predicates_by_table.get(t0, [])}),
+                right_subtree,
+            ],
+        )
+        return PhysicalPlanNode(operator="project", params={}, children=[root])
+
     def _count_join_nodes(self, node: PhysicalPlanNode) -> int:
         total = 1 if node.operator == "join" else 0
         for child in node.children:
@@ -194,11 +246,12 @@ class PhysicalPlanGenerator:
         order: Tuple[str, ...],
         scans: Tuple[str, ...],
         algos: Tuple[str, ...],
+        shape: str,
     ) -> str:
         left = "-".join(order)
         middle = "-".join(scans)
         right = "-".join(algos)
-        return f"order={left}|scan={middle}|join={right}"
+        return f"shape={shape}|order={left}|scan={middle}|join={right}"
 
     def _table_rows_estimate(self, table: str, predicates: List[Predicate]) -> float:
         if self.cardinality is None or self.db is None:
