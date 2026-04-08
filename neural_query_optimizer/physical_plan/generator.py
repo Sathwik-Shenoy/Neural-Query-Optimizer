@@ -4,6 +4,8 @@ import itertools
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Tuple
 
+from neural_query_optimizer.cost_model.cardinality import CardinalityEstimator
+from neural_query_optimizer.execution_engine.database import InMemoryDatabase
 from neural_query_optimizer.utils.types import JoinCondition, ParsedQuery, PhysicalPlanNode, Predicate
 
 
@@ -18,8 +20,10 @@ class PlanCandidate:
 class PhysicalPlanGenerator:
     """Enumerate physical plan alternatives for a parsed query."""
 
-    def __init__(self, max_join_orders: int = 8) -> None:
+    def __init__(self, max_join_orders: int = 8, db: InMemoryDatabase | None = None) -> None:
         self.max_join_orders = max_join_orders
+        self.db = db
+        self.cardinality = CardinalityEstimator(db) if db is not None else None
 
     def generate(self, query: ParsedQuery) -> List[PlanCandidate]:
         tables = [query.from_table] + [table for table, _ in query.joins]
@@ -27,7 +31,7 @@ class PhysicalPlanGenerator:
         join_conditions = self._join_condition_map(query.joins)
 
         candidates: List[PlanCandidate] = []
-        all_orders = itertools.islice(itertools.permutations(tables), self.max_join_orders)
+        all_orders = self._enumerate_join_orders(tables, predicates_by_table, join_conditions)
 
         for order in all_orders:
             scan_choices = ["full_scan", "index_scan"]
@@ -48,6 +52,63 @@ class PhysicalPlanGenerator:
                     candidates.append(PlanCandidate(plan_id=plan_id, plan=cloned))
 
         return candidates
+
+    def _enumerate_join_orders(
+        self,
+        tables: List[str],
+        predicates_by_table: Dict[str, List[Predicate]],
+        join_conditions: Dict[frozenset[str], JoinCondition],
+    ) -> List[Tuple[str, ...]]:
+        if len(tables) <= 1:
+            return [tuple(tables)]
+
+        # Selinger-style left-deep DP over subsets, tracking best prefix order and estimated rows.
+        # Time complexity is O(n^2 2^n), which is still practical for small join graphs.
+        best: Dict[frozenset[str], tuple[Tuple[str, ...], float, float]] = {}
+        for table in tables:
+            rows = self._table_rows_estimate(table, predicates_by_table.get(table, []))
+            subset = frozenset({table})
+            best[subset] = ((table,), rows, rows)
+
+        for size in range(2, len(tables) + 1):
+            for subset_tuple in itertools.combinations(tables, size):
+                subset = frozenset(subset_tuple)
+                best_plan: tuple[Tuple[str, ...], float, float] | None = None
+
+                for right in subset:
+                    left_subset = subset - {right}
+                    if left_subset not in best:
+                        continue
+
+                    left_order, left_rows, left_cost = best[left_subset]
+                    cond = self._find_attachable_condition(set(left_subset), right, join_conditions)
+                    if cond is None:
+                        continue
+
+                    right_rows = self._table_rows_estimate(right, predicates_by_table.get(right, []))
+                    join_rows = self._join_rows_estimate(left_rows, right_rows, cond)
+                    join_cost = left_cost + join_rows
+                    candidate = (left_order + (right,), join_rows, join_cost)
+
+                    if best_plan is None or candidate[2] < best_plan[2]:
+                        best_plan = candidate
+
+                if best_plan is not None:
+                    best[subset] = best_plan
+
+        full_set = frozenset(tables)
+        ranked_orders: List[Tuple[str, ...]] = []
+        if full_set in best:
+            ranked_orders.append(best[full_set][0])
+
+        # Add additional alternatives for robust plan diversity.
+        for perm in itertools.permutations(tables):
+            if perm not in ranked_orders:
+                ranked_orders.append(perm)
+            if len(ranked_orders) >= self.max_join_orders:
+                break
+
+        return ranked_orders[: self.max_join_orders]
 
     def _group_predicates(self, predicates: Iterable[Predicate]) -> Dict[str, List[Predicate]]:
         grouped: Dict[str, List[Predicate]] = {}
@@ -138,3 +199,18 @@ class PhysicalPlanGenerator:
         middle = "-".join(scans)
         right = "-".join(algos)
         return f"order={left}|scan={middle}|join={right}"
+
+    def _table_rows_estimate(self, table: str, predicates: List[Predicate]) -> float:
+        if self.cardinality is None or self.db is None:
+            base_rows = 1000.0
+            return max(1.0, base_rows * (0.7 ** len(predicates)))
+
+        estimate = self.cardinality.estimate_filter_rows(table, predicates)
+        return max(1.0, estimate.rows)
+
+    def _join_rows_estimate(self, left_rows: float, right_rows: float, condition: JoinCondition) -> float:
+        if self.cardinality is None:
+            return max(1.0, 0.1 * left_rows * right_rows)
+
+        estimate = self.cardinality.estimate_join_rows(left_rows, right_rows, condition)
+        return max(1.0, estimate.rows)
