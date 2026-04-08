@@ -114,6 +114,22 @@ Endpoints:
 Generates:
 - [artifacts/cost_comparison.png](artifacts/cost_comparison.png)
 
+## Run Full Experiments
+
+```bash
+python run_experiments.py --config configs/default.yaml
+```
+
+Outputs:
+- performance summary with:
+  - Rule-based best plan cost
+  - ML predicted best plan cost
+  - Actual best plan cost
+  - Accuracy
+  - Improvement
+- comparison table for sampled queries
+- persisted artifact: [artifacts/plan_comparisons.json](artifacts/plan_comparisons.json)
+
 ## Testing
 
 ```bash
@@ -162,6 +178,10 @@ These are written to [artifacts/training_metrics.json](artifacts/training_metric
 - Correlated predicates: independence assumptions over/under-estimate cardinality.
 - Sparse indexes: index-scan assumptions become optimistic when random I/O dominates.
 - Drift over time: model and statistics need periodic retraining/refresh.
+
+## Design Notes
+
+- [DESIGN.md](DESIGN.md)
 
 ## Interview Discussion Hooks
 
