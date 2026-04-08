@@ -22,7 +22,10 @@ def summarize_comparisons(path: Path) -> dict[str, float]:
     best_costs = [float(r["actual_best"]["actual_cost"]) for r in rows]
     baseline_errors = [float(r["rule_based"]["cost_error"]) for r in rows]
     ml_errors = [float(r["ml_selected"]["cost_error"]) for r in rows]
+    baseline_rel_err = [abs(float(r["rule_based"]["cost_error"])) / max(float(r["rule_based"]["actual_cost"]), 1e-9) for r in rows]
+    ml_rel_err = [abs(float(r["ml_selected"]["cost_error"])) / max(float(r["ml_selected"]["actual_cost"]), 1e-9) for r in rows]
     accuracy = sum(int(r["ml_selected"]["plan"] == r["actual_best"]["plan"]) for r in rows) / len(rows)
+    rule_accuracy = sum(int(r["rule_based"]["plan"] == r["actual_best"]["plan"]) for r in rows) / len(rows)
     improvement = (sum(baseline_costs) - sum(ml_costs)) / max(sum(baseline_costs), 1e-9)
 
     return {
@@ -31,18 +34,30 @@ def summarize_comparisons(path: Path) -> dict[str, float]:
         "actual_best_plan_cost": float(sum(best_costs) / len(best_costs)),
         "baseline_cost_error": float(sum(baseline_errors) / len(baseline_errors)),
         "ml_cost_error": float(sum(ml_errors) / len(ml_errors)),
+        "rule_based_accuracy": float(rule_accuracy),
         "accuracy": float(accuracy),
         "improvement": float(improvement),
+        "total_queries_tested": float(len(rows)),
+        "rule_based_avg_cost_error_pct": float(100.0 * sum(baseline_rel_err) / len(baseline_rel_err)),
+        "ml_avg_cost_error_pct": float(100.0 * sum(ml_rel_err) / len(ml_rel_err)),
     }
 
 
 def print_summary(summary: dict[str, float]) -> None:
+    print(f"Total Queries Tested: {int(summary['total_queries_tested'])}")
+    print("")
     print(f"Rule-based best plan cost: {summary['rule_based_best_plan_cost']:.3f}")
     print(f"ML predicted best plan cost: {summary['ml_predicted_best_plan_cost']:.3f}")
     print(f"Actual best plan cost: {summary['actual_best_plan_cost']:.3f}")
     print(f"Cost estimation error (rule): {summary['baseline_cost_error']:+.3f}")
     print(f"Cost estimation error (ml): {summary['ml_cost_error']:+.3f}")
-    print(f"Accuracy: {summary['accuracy'] * 100:.2f}%")
+    print("")
+    print(f"Rule-Based Accuracy: {summary['rule_based_accuracy'] * 100:.2f}%")
+    print(f"ML Accuracy: {summary['accuracy'] * 100:.2f}%")
+    print("")
+    print(f"Average Cost Error (Rule-Based): {summary['rule_based_avg_cost_error_pct']:.2f}%")
+    print(f"Average Cost Error (ML): {summary['ml_avg_cost_error_pct']:.2f}%")
+    print("")
     print(f"Improvement: {summary['improvement'] * 100:+.2f}%")
     print("Why costs differ: cache effects, skew, and imperfect cardinality statistics.")
 

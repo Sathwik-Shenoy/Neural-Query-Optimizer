@@ -69,6 +69,7 @@ class TrainingPipeline:
         sql_queries = query_gen.generate(int(train_cfg["num_queries"]))
 
         records: List[Dict[str, object]] = []
+        detailed_logs: List[Dict[str, object]] = []
 
         for qid, sql in enumerate(sql_queries):
             parsed = self.parser.parse(sql)
@@ -76,17 +77,34 @@ class TrainingPipeline:
             for candidate in candidates:
                 _, stats = simulator.execute(candidate.plan)
                 features = extractor.extract(parsed, candidate.plan)
+                estimated_cost = baseline.estimate(candidate.plan)
+                actual_cost = stats.execution_time_ms
+                error = actual_cost - estimated_cost
+                relative_error = error / max(actual_cost, 1e-9)
 
                 records.append(
                     {
                         "query_id": qid,
                         "sql": sql,
                         "plan_id": candidate.plan_id,
-                        "baseline_cost": baseline.estimate(candidate.plan),
-                        "actual_latency_ms": stats.execution_time_ms,
+                        "baseline_cost": estimated_cost,
+                        "actual_latency_ms": actual_cost,
+                        "cost_error": error,
+                        "relative_error": relative_error,
                         "rows_scanned": stats.rows_scanned,
                         "memory_bytes": stats.peak_memory_bytes,
                         **features,
+                    }
+                )
+                detailed_logs.append(
+                    {
+                        "query": sql,
+                        "plan": candidate.plan_id,
+                        "estimated_cost": float(estimated_cost),
+                        "actual_cost": float(actual_cost),
+                        "error": float(error),
+                        "relative_error": float(relative_error),
+                        "features": {k: float(v) for k, v in features.items()},
                     }
                 )
 
@@ -112,11 +130,13 @@ class TrainingPipeline:
         dataset_path = str(train_cfg["dataset_path"])
         metrics_path = str(train_cfg["metrics_path"])
         comparison_path = str(train_cfg.get("comparison_path", "artifacts/plan_comparisons.json"))
+        detailed_log_path = str(train_cfg.get("detailed_log_path", "artifacts/experiment_dataset.json"))
 
         Path(model_path).parent.mkdir(parents=True, exist_ok=True)
         Path(dataset_path).parent.mkdir(parents=True, exist_ok=True)
         Path(metrics_path).parent.mkdir(parents=True, exist_ok=True)
         Path(comparison_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(detailed_log_path).parent.mkdir(parents=True, exist_ok=True)
 
         # type: ignore[attr-defined]
         model.save(model_path)
@@ -137,6 +157,9 @@ class TrainingPipeline:
         with Path(comparison_path).open("w", encoding="utf-8") as handle:
             json.dump(comparisons, handle, indent=2)
 
+        with Path(detailed_log_path).open("w", encoding="utf-8") as handle:
+            json.dump(detailed_logs, handle, indent=2)
+
         return metrics
 
     def _feature_columns(self, df: pd.DataFrame) -> List[str]:
@@ -146,6 +169,7 @@ class TrainingPipeline:
             "join_count",
             "total_rows",
             "predicate_count",
+            "selectivity",
             "estimated_selectivity",
             "estimated_selectivity_explicit",
             "estimated_filtered_rows",
@@ -180,8 +204,10 @@ class TrainingPipeline:
         model_beats_baseline = 0
         baseline_error_sum = 0.0
         baseline_abs_error_sum = 0.0
+        baseline_rel_abs_error_sum = 0.0
         ml_error_sum = 0.0
         ml_abs_error_sum = 0.0
+        ml_rel_abs_error_sum = 0.0
 
         for _, group in eval_df.groupby("query_id"):
             oracle_row = group.loc[group["actual_latency_ms"].idxmin()]
@@ -199,8 +225,10 @@ class TrainingPipeline:
             ml_err = float(model_row["predicted_latency_ms"]) - float(model_row["actual_latency_ms"])
             baseline_error_sum += baseline_err
             baseline_abs_error_sum += abs(baseline_err)
+            baseline_rel_abs_error_sum += abs(baseline_err) / max(float(baseline_row["actual_latency_ms"]), 1e-9)
             ml_error_sum += ml_err
             ml_abs_error_sum += abs(ml_err)
+            ml_rel_abs_error_sum += abs(ml_err) / max(float(model_row["actual_latency_ms"]), 1e-9)
 
         accuracy = float(correct / max(total, 1))
         baseline_accuracy = float(baseline_correct / max(total, 1))
@@ -215,8 +243,11 @@ class TrainingPipeline:
             "ml_mean_latency_ms": float(model_total / max(total, 1)),
             "baseline_cost_bias_ms": float(baseline_error_sum / max(total, 1)),
             "baseline_cost_mae_ms": float(baseline_abs_error_sum / max(total, 1)),
+            "baseline_cost_error_pct": float(100.0 * baseline_rel_abs_error_sum / max(total, 1)),
             "ml_cost_bias_ms": float(ml_error_sum / max(total, 1)),
             "ml_cost_mae_ms": float(ml_abs_error_sum / max(total, 1)),
+            "ml_cost_error_pct": float(100.0 * ml_rel_abs_error_sum / max(total, 1)),
+            "total_queries_tested": float(total),
         }
 
     def _build_plan_comparisons(self, test_df: pd.DataFrame, test_pred: np.ndarray) -> List[Dict[str, object]]:

@@ -7,8 +7,14 @@ from pathlib import Path
 import pandas as pd
 import uvicorn
 
+from neural_query_optimizer.cost_model.baseline import BaselineCostModel
 from neural_query_optimizer.execution_engine.database import InMemoryDatabase
+from neural_query_optimizer.execution_engine.simulator import ExecutionSimulator
+from neural_query_optimizer.ml_model.features import FeatureExtractor
 from neural_query_optimizer.ml_model.inference import LearnedPlanSelector
+from neural_query_optimizer.ml_model.model import RandomForestPlanModel
+from neural_query_optimizer.parser.sql_parser import SQLParser
+from neural_query_optimizer.physical_plan.generator import PhysicalPlanGenerator
 from neural_query_optimizer.training.pipeline import TrainingPipeline
 from neural_query_optimizer.utils.config import load_config
 
@@ -28,9 +34,60 @@ def cmd_optimize(config_path: str, sql: str) -> None:
         seed=int(cfg["seed"]),
     )
 
-    selector = LearnedPlanSelector(db=db, model_path=str(cfg["training"]["model_path"]))
-    result = selector.rank(sql)
-    print(json.dumps(result, indent=2))
+    parser = SQLParser()
+    parsed = parser.parse(sql)
+    generator = PhysicalPlanGenerator(db=db)
+    candidates = generator.generate(parsed)
+
+    baseline = BaselineCostModel(db)
+    simulator = ExecutionSimulator(db)
+    extractor = FeatureExtractor(db)
+    model = RandomForestPlanModel()
+    model.load(str(cfg["training"]["model_path"]))
+
+    rows = []
+    for cand in candidates:
+        baseline_cost = baseline.estimate(cand.plan)
+        feat = extractor.extract(parsed, cand.plan)
+        feat["baseline_cost"] = baseline_cost
+        pred_cost = float(model.predict(pd.DataFrame([feat]))[0])
+        _, stats = simulator.execute(cand.plan)
+        rows.append(
+            {
+                "plan_id": cand.plan_id,
+                "baseline_cost": baseline_cost,
+                "predicted_cost": pred_cost,
+                "actual_cost": float(stats.execution_time_ms),
+            }
+        )
+
+    df = pd.DataFrame(rows)
+    ml_best = df.loc[df["predicted_cost"].idxmin()]
+    rule_best = df.loc[df["baseline_cost"].idxmin()]
+    actual_best = df.loc[df["actual_cost"].idxmin()]
+    improvement = (float(rule_best["actual_cost"]) - float(ml_best["actual_cost"])) / max(
+        float(rule_best["actual_cost"]), 1e-9
+    )
+
+    print(f"Query: {sql}")
+    print("")
+    print(f"Plans Evaluated: {len(df)}")
+    print("")
+    print("Best Plan (ML):")
+    print(f"- {ml_best['plan_id']}")
+    print(f"- Predicted Cost: {float(ml_best['predicted_cost']):.3f}")
+    print(f"- Actual Cost: {float(ml_best['actual_cost']):.3f}")
+    print("")
+    print("Best Plan (Rule-Based):")
+    print(f"- {rule_best['plan_id']}")
+    print(f"- Cost: {float(rule_best['baseline_cost']):.3f}")
+    print(f"- Actual Cost: {float(rule_best['actual_cost']):.3f}")
+    print("")
+    print("Actual Best Plan (Oracle):")
+    print(f"- {actual_best['plan_id']}")
+    print(f"- Actual Cost: {float(actual_best['actual_cost']):.3f}")
+    print("")
+    print(f"Improvement: {improvement * 100:+.2f}%")
 
 
 def cmd_serve(config_path: str) -> None:

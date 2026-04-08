@@ -27,22 +27,27 @@ class FeatureExtractor:
         hash_joins = self._count_join_algo(plan, "hash_join")
         nl_joins = self._count_join_algo(plan, "nested_loop")
 
-        selectivity = max(0.01, 1.0 - 0.15 * len(query.predicates))
         table_filter_rows = 0.0
-        total_base_rows = max(1.0, float(total_rows))
+        rows_after_filter_by_table: Dict[str, float] = {}
         for table in tables:
             table_preds = [p for p in query.predicates if p.table in (None, table)]
-            table_filter_rows += self.cardinality.estimate_filter_rows(table, table_preds).rows
+            est = self.cardinality.estimate_filter_rows(table, table_preds)
+            table_filter_rows += est.rows
+            rows_after_filter_by_table[table] = est.rows
 
         estimated_rows_after_filter = max(1.0, table_filter_rows)
-        estimated_join_output_size = max(1.0, estimated_rows_after_filter * (0.6 ** join_count))
-        estimated_selectivity_explicit = min(1.0, estimated_rows_after_filter / total_base_rows)
+        total_base_rows = max(1.0, float(total_rows))
+        selectivity = min(1.0, estimated_rows_after_filter / total_base_rows)
+
+        estimated_join_output_size = self._estimate_join_output_size(query, rows_after_filter_by_table)
+        estimated_selectivity_explicit = selectivity
 
         return {
             "table_count": float(len(tables)),
             "join_count": float(join_count),
             "total_rows": float(total_rows),
             "predicate_count": float(len(query.predicates)),
+            "selectivity": float(selectivity),
             "estimated_selectivity": float(selectivity),
             "estimated_selectivity_explicit": float(estimated_selectivity_explicit),
             "estimated_filtered_rows": float(table_filter_rows),
@@ -68,3 +73,19 @@ class FeatureExtractor:
         for child in node.children:
             count += self._count_join_algo(child, algo)
         return count
+
+    def _estimate_join_output_size(self, query: ParsedQuery, rows_after_filter: Dict[str, float]) -> float:
+        if not query.joins:
+            return max(1.0, rows_after_filter.get(query.from_table, 1.0))
+
+        current_rows = max(1.0, rows_after_filter.get(query.from_table, 1.0))
+        seen = {query.from_table}
+
+        for right_table, cond in query.joins:
+            right_rows = max(1.0, rows_after_filter.get(right_table, 1.0))
+            # join_output_size = (left_rows * right_rows) * join_selectivity
+            join_est = self.cardinality.estimate_join_rows(current_rows, right_rows, cond)
+            current_rows = max(1.0, join_est.rows)
+            seen.add(right_table)
+
+        return current_rows
