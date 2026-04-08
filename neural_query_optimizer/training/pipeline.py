@@ -8,7 +8,7 @@ from typing import Dict, List
 import numpy as np
 import pandas as pd
 
-from neural_query_optimizer.cost_model.baseline import BaselineCostModel
+from neural_query_optimizer.cost_model.baseline import BaselineCostModel, CostConstants
 from neural_query_optimizer.execution_engine.database import InMemoryDatabase
 from neural_query_optimizer.execution_engine.simulator import EngineConfig, ExecutionSimulator
 from neural_query_optimizer.ml_model.features import FeatureExtractor
@@ -31,13 +31,22 @@ class TrainingPipeline:
     def __init__(self, config: Dict[str, object]) -> None:
         self.config = config
         self.parser = SQLParser()
-        self.generator = PhysicalPlanGenerator()
 
         exec_cfg = config["execution"]
         self.engine_config = EngineConfig(
             index_scan_bonus=float(exec_cfg["index_scan_bonus"]),
             hash_join_bonus=float(exec_cfg["hash_join_bonus"]),
             nested_loop_penalty=float(exec_cfg["nested_loop_penalty"]),
+        )
+
+        cost_cfg = config.get("cost_model", {})
+        self.cost_constants = CostConstants(
+            rows_per_page=int(cost_cfg.get("rows_per_page", 128)),
+            seq_page_read_cost=float(cost_cfg.get("seq_page_read_cost", 1.0)),
+            random_page_read_cost=float(cost_cfg.get("random_page_read_cost", 4.0)),
+            cpu_tuple_cost=float(cost_cfg.get("cpu_tuple_cost", 0.01)),
+            cpu_operator_cost=float(cost_cfg.get("cpu_operator_cost", 0.002)),
+            hash_cpu_cost=float(cost_cfg.get("hash_cpu_cost", 0.004)),
         )
 
     def run(self) -> Dict[str, float]:
@@ -52,8 +61,9 @@ class TrainingPipeline:
         )
 
         simulator = ExecutionSimulator(db, self.engine_config)
-        baseline = BaselineCostModel(db)
+        baseline = BaselineCostModel(db, constants=self.cost_constants)
         extractor = FeatureExtractor(db)
+        generator = PhysicalPlanGenerator(db=db)
 
         query_gen = QueryGenerator(table_names=db.table_names(), seed=seed)
         sql_queries = query_gen.generate(int(train_cfg["num_queries"]))
@@ -62,7 +72,7 @@ class TrainingPipeline:
 
         for qid, sql in enumerate(sql_queries):
             parsed = self.parser.parse(sql)
-            candidates = self.generator.generate(parsed)
+            candidates = generator.generate(parsed)
             for candidate in candidates:
                 _, stats = simulator.execute(candidate.plan)
                 features = extractor.extract(parsed, candidate.plan)
@@ -131,6 +141,8 @@ class TrainingPipeline:
             "total_rows",
             "predicate_count",
             "estimated_selectivity",
+            "estimated_filtered_rows",
+            "estimated_output_rows",
             "index_scan_count",
             "full_scan_count",
             "hash_join_count",
@@ -152,9 +164,11 @@ class TrainingPipeline:
         eval_df["predicted_latency_ms"] = test_pred
 
         correct = 0
+        baseline_correct = 0
         total = 0
         baseline_total = 0.0
         model_total = 0.0
+        model_beats_baseline = 0
 
         for _, group in eval_df.groupby("query_id"):
             oracle_row = group.loc[group["actual_latency_ms"].idxmin()]
@@ -163,12 +177,20 @@ class TrainingPipeline:
 
             total += 1
             correct += int(model_row["plan_id"] == oracle_row["plan_id"])
+            baseline_correct += int(baseline_row["plan_id"] == oracle_row["plan_id"])
             baseline_total += float(baseline_row["actual_latency_ms"])
             model_total += float(model_row["actual_latency_ms"])
+            model_beats_baseline += int(float(model_row["actual_latency_ms"]) < float(baseline_row["actual_latency_ms"]))
 
         accuracy = float(correct / max(total, 1))
+        baseline_accuracy = float(baseline_correct / max(total, 1))
         improvement = float((baseline_total - model_total) / max(baseline_total, 1e-6))
+        win_rate = float(model_beats_baseline / max(total, 1))
         return {
             "plan_selection_accuracy": accuracy,
+            "baseline_plan_selection_accuracy": baseline_accuracy,
+            "ml_vs_baseline_win_rate": win_rate,
             "latency_improvement_over_baseline": improvement,
+            "baseline_mean_latency_ms": float(baseline_total / max(total, 1)),
+            "ml_mean_latency_ms": float(model_total / max(total, 1)),
         }

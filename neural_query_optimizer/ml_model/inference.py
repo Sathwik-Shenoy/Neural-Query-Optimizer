@@ -27,7 +27,7 @@ class LearnedPlanSelector:
     def __init__(self, db: InMemoryDatabase, model_path: str) -> None:
         self.db = db
         self.parser = SQLParser()
-        self.generator = PhysicalPlanGenerator()
+        self.generator = PhysicalPlanGenerator(db=db)
         self.extractor = FeatureExtractor(db)
         self.baseline = BaselineCostModel(db)
 
